@@ -1,6 +1,6 @@
 import numpy as np
 from tensorflow import keras
-
+import tensorflow as tf
 
 def is_numpy(obj):
     """
@@ -34,15 +34,17 @@ def ensure_tf_type(obj, fake_input_layer=None, name=None):
         if obj.dtype == np.int64:
             obj = np.int32(obj)
 
-        def target_layer(_, inp=obj, dtype=obj.dtype.name):
-            import numpy as np
-            import tensorflow as tf
-            if not isinstance(inp, (np.ndarray, np.generic)):
-                inp = np.array(inp, dtype=dtype)
-            return tf.constant(inp, dtype=inp.dtype)
+        # def target_layer(_, inp=obj, dtype=obj.dtype.name):
+        #     import numpy as np
+        #     import tensorflow as tf
+        #     if not isinstance(inp, (np.ndarray, np.generic)):
+        #         inp = np.array(inp, dtype=dtype)
+        #     return tf.convert_to_tensor(inp)
 
-        lambda_layer = keras.layers.Lambda(target_layer, name=name)
-        return lambda_layer(fake_input_layer)
+        # lambda_layer = keras.layers.Lambda(target_layer, name=name)
+        tensor = tf.convert_to_tensor(obj)
+
+        return tensor
     else:
         return obj
 
@@ -60,11 +62,8 @@ def check_torch_keras_error(model, k_model, input_np, epsilon=1e-5, change_order
     from torch.autograd import Variable
     import torch
 
-    initial_keras_image_format = keras.backend.image_data_format()
-
     if isinstance(input_np, np.ndarray):
-        input_np = [input_np.astype(np.float32)]
-
+        input_np = [input_np]
 
     input_var = [Variable(torch.FloatTensor(i)) for i in input_np]
     pytorch_output = model(*input_var)
@@ -75,10 +74,6 @@ def check_torch_keras_error(model, k_model, input_np, epsilon=1e-5, change_order
 
     if change_ordering:
         # change image data format
-
-        # to proper work with Lambda layers that transpose weights based on image_data_format
-        keras.backend.set_image_data_format("channels_last")
-
         _input_np = []
         for i in input_np:
             axes = list(range(len(i.shape)))
@@ -91,29 +86,23 @@ def check_torch_keras_error(model, k_model, input_np, epsilon=1e-5, change_order
         if not isinstance(keras_output, list):
             keras_output = [keras_output]
 
-        # change image data format if output shapes are different (e.g. the same for global_avgpool2d)
+        # change image data format
         _koutput = []
-        for i, k in enumerate(keras_output):
-            if k.shape != pytorch_output[i].shape:
-                axes = list(range(len(k.shape)))
-                axes = axes[0:1] + axes[-1:] + axes[1:-1]
-                k = np.transpose(k, axes)
-            _koutput.append(k)
+        for k in keras_output:
+            axes = list(range(len(k.shape)))
+            axes = axes[0:1] + axes[-1:] + axes[1:-1]
+            _koutput.append(np.transpose(k, axes))
         keras_output = _koutput
     else:
-        keras.backend.set_image_data_format("channels_first")
         keras_output = k_model.predict(input_np)
         if not isinstance(keras_output, list):
             keras_output = [keras_output]
 
-    # reset to previous image_data_format
-    keras.backend.set_image_data_format(initial_keras_image_format)
-
     max_error = 0
     for p, k in zip(pytorch_output, keras_output):
         error = np.max(np.abs(p - k))
-        np.testing.assert_allclose(p, k, atol=epsilon, rtol=0.0)
         if error > max_error:
             max_error = error
 
+    assert max_error < epsilon
     return max_error

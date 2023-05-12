@@ -1,3 +1,4 @@
+import tensorflow as tf
 from tensorflow import keras
 import logging
 from .utils import is_numpy, ensure_tf_type
@@ -14,30 +15,23 @@ def convert_elementwise_div(node, params, layers, lambda_func, node_name, keras_
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.div')
+    logger = logging.getLogger('onnx2keras:div')
 
     if len(node.input) != 2:
         raise AttributeError('Number of inputs is not equal 2 for element-wise layer')
-
+  
     if is_numpy(layers[node.input[0]]) and is_numpy(layers[node.input[1]]):
         logger.debug('Divide numpy arrays.')
         layers[node_name] = layers[node.input[0]] / layers[node.input[1]]
+    
     else:
         logger.debug('Convert inputs to Keras/TF layers if needed.')
         input_0 = ensure_tf_type(layers[node.input[0]], layers[list(layers)[0]], name="%s_const1" % keras_name)
         input_1 = ensure_tf_type(layers[node.input[1]], layers[list(layers)[0]], name="%s_const2" % keras_name)
 
-        def target_layer(x):
-            import tensorflow as tf
-            layer = tf.divide(
-                x[0],
-                x[1]
-            )
-            return layer
-
-        lambda_layer = keras.layers.Lambda(target_layer, name=keras_name)
-        layers[node_name] = lambda_layer([input_0, input_1])
-        lambda_func[keras_name] = target_layer
+        div = tf.math.divide(input_0, input_1)
+        layers[node_name] = div
+        
 
 
 def convert_elementwise_add(node, params, layers, lambda_func, node_name, keras_name):
@@ -51,7 +45,7 @@ def convert_elementwise_add(node, params, layers, lambda_func, node_name, keras_
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.add')
+    logger = logging.getLogger('onnx2keras:add')
 
     if len(node.input) != 2:
         raise AttributeError('Number of inputs is not equal 2 for element-wise layer')
@@ -59,11 +53,14 @@ def convert_elementwise_add(node, params, layers, lambda_func, node_name, keras_
     logger.debug('Convert inputs to Keras/TF layers if needed.')
     input_0 = ensure_tf_type(layers[node.input[0]], layers[list(layers)[0]], name="%s_const1" % keras_name)
     input_1 = ensure_tf_type(layers[node.input[1]], layers[list(layers)[0]], name="%s_const2" % keras_name)
-
+    # import pdb;pdb.set_trace()
     try:
         if not is_numpy(layers[node.input[0]]) and not is_numpy(layers[node.input[1]]):
             add = keras.layers.Add(name=keras_name)
             layers[node_name] = add([input_0, input_1])
+        elif  is_numpy(layers[node.input[0]]) or is_numpy(layers[node.input[1]]): 
+            add = tf.add(input_0, input_1)
+            layers[node_name] = add
         else:
             raise ValueError('Operands are different.')
 
@@ -95,18 +92,37 @@ def convert_elementwise_mul(node, params, layers, lambda_func, node_name, keras_
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.mul')
+    logger = logging.getLogger('onnx2keras:mul')
 
     if len(node.input) != 2:
         raise AttributeError('Number of inputs is not equal 2 for element-wise layer')
 
+    
     logger.debug('Convert inputs to Keras/TF layers if needed.')
-    input_0 = ensure_tf_type(layers[node.input[0]], layers[list(layers)[0]], name="%s_const1" % keras_name)
-    input_1 = ensure_tf_type(layers[node.input[1]], layers[list(layers)[0]], name="%s_const2" % keras_name)
+    
+    NUMPY_INPUT_FIRST = is_numpy(layers[node.input[0]])
+    if NUMPY_INPUT_FIRST:
+            
+        input_1 = ensure_tf_type(layers[node.input[0]], layers[list(layers)[0]], name="%s_const1" % keras_name)
+        input_0 = ensure_tf_type(layers[node.input[1]], layers[list(layers)[0]], name="%s_const2" % keras_name)
+        if len(layers[node.input[0]].shape) == 3:
+            input_1 = tf.transpose(input_1,[1,2,0]) 
+    
+    else:
+        input_0 = ensure_tf_type(layers[node.input[0]], layers[list(layers)[0]], name="%s_const1" % keras_name)
+        input_1 = ensure_tf_type(layers[node.input[1]], layers[list(layers)[0]], name="%s_const2" % keras_name) 
+
 
     try:
-        mul = keras.layers.Multiply(name=keras_name)
-        layers[node_name] = mul([input_0, input_1])
+        if is_numpy(layers[node.input[1]]) or is_numpy(layers[node.input[0]]):   
+            
+            mult = tf.math.multiply(input_0, input_1)
+            layers[node_name] = mult
+
+        else:
+            mul = keras.layers.Multiply(name=keras_name)
+            layers[node_name] = mul([input_0, input_1])
+
     except (IndexError, ValueError):
         logger.warning('Failed to use keras.layers.Multiply. Fallback to TF lambda.')
 
@@ -121,6 +137,7 @@ def convert_elementwise_mul(node, params, layers, lambda_func, node_name, keras_
             )
             return layer
 
+        
         lambda_layer = keras.layers.Lambda(target_layer, name=keras_name)
         layers[node_name] = lambda_layer([input_0, input_1])
         lambda_func[keras_name] = target_layer
@@ -137,7 +154,7 @@ def convert_elementwise_sub(node, params, layers, lambda_func, node_name, keras_
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.sub')
+    logger = logging.getLogger('onnx2keras:sub')
 
     if len(node.input) != 2:
         raise AttributeError('Number of inputs is not equal 2 for element-wise layer')
@@ -146,9 +163,10 @@ def convert_elementwise_sub(node, params, layers, lambda_func, node_name, keras_
     input_0 = ensure_tf_type(layers[node.input[0]], layers[list(layers)[0]], name="%s_const1" % keras_name)
     input_1 = ensure_tf_type(layers[node.input[1]], layers[list(layers)[0]], name="%s_const2" % keras_name)
 
+    
     try:
-        sub = keras.layers.Subtract(name=keras_name)
-        layers[node_name] = sub([input_0, input_1])
+        sub = keras.layers.subtract(inputs=[input_0, input_1],name=keras_name)
+        layers[node_name] = sub
     except (IndexError, ValueError):
         logger.warning('Failed to use keras.layers.Subtract. Fallback to TF lambda.')
 
@@ -230,3 +248,25 @@ def convert_mean(node, params, layers, lambda_func, node_name, keras_name):
         input_ = ensure_tf_type(layers[inp], layers[list(layers)[0]], name="%s_const%i" % (keras_name, i+1))
         inputs.append(input_)
     layers[node_name] = keras.layers.Average(name=keras_name)(inputs)
+
+
+def convert_erf(node, params, layers, lambda_func, node_name, keras_name):
+    """
+    Convert Erf layer
+    :param node: current operation node
+    :param params: operation attributes
+    :param layers: available keras layers
+    :param lambda_func: function for keras Lambda layer
+    :param node_name: internal converter name
+    :param keras_name: resulting layer name
+    :return: None
+
+    """
+    if len(node.input) != 1:
+        assert AttributeError('More than 1 input for erf layer.')
+
+    input_0 = ensure_tf_type(layers[node.input[0]], name="%s_const" % keras_name)
+    import tensorflow as tf
+
+    erf = tf.math.erf(input_0)
+    layers[node_name] = erf

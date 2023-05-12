@@ -14,7 +14,8 @@ def convert_conv(node, params, layers, lambda_func, node_name, keras_name):
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.conv')
+    
+    logger = logging.getLogger('onnx2keras:conv')
 
     if len(node.input) == 3:
         logger.debug('Conv with bias')
@@ -86,7 +87,7 @@ def convert_conv(node, params, layers, lambda_func, node_name, keras_name):
             padding_layer = keras.layers.ZeroPadding2D(
                 padding=padding,
                 name=padding_name,
-                data_format='channels_first'
+                data_format='channels_last'
             )
             layers[padding_name] = input_0 = padding_layer(input_0)
 
@@ -96,6 +97,7 @@ def convert_conv(node, params, layers, lambda_func, node_name, keras_name):
 
         if n_groups == in_channels and n_groups != 1:
             logger.debug('Number of groups is equal to input channels, use DepthWise convolution')
+            # import pdb;pdb.set_trace()
             W = W.transpose(0, 1, 3, 2)
             if has_bias:
                 weights = [W, bias]
@@ -112,55 +114,43 @@ def convert_conv(node, params, layers, lambda_func, node_name, keras_name):
                 weights=weights,
                 dilation_rate=dilation,
                 bias_initializer='zeros', kernel_initializer='zeros',
-                name=keras_name
+                name=keras_name,
+                data_format="channels_last"
             )
             layers[node_name] = conv(input_0)
 
         elif n_groups != 1:
             logger.debug('Number of groups more than 1, but less than number of in_channel, use group convolution')
+            
+            if has_bias:
+                weights = [W, bias]
+            else:
+                weights = [W]
 
-            # Example from https://kratzert.github.io/2017/02/24/finetuning-alexnet-with-tensorflow.html
-            def target_layer(x, groups=n_groups, stride_y=strides[0], stride_x=strides[1]):
-                import tensorflow as tf
-                from tensorflow.keras import backend as K
-                data_format = 'NCHW' if K.image_data_format() == 'channels_first' else 'NHWC'
+            conv = keras.layers.Conv2D(
+                filters=in_channels,
+                kernel_size=(height, width),
+                strides=(strides[0], strides[1]),
+                padding='valid',
+                use_bias=has_bias,
+                groups= n_groups,
+                activation=None,
+                dilation_rate=dilation,
+                bias_initializer='zeros', kernel_initializer='zeros',
+                name=keras_name,
+                data_format="channels_last"
+            )
+            
+            layers[node_name] = conv(input_0)
+            conv.set_weights(weights)
 
-                if data_format == 'NCHW':
-                    x = tf.transpose(x, [0, 2, 3, 1])
-
-                def convolve_lambda_biased(i, k, b):
-                    import tensorflow as tf
-                    conv = tf.nn.conv2d(i, k, strides=[1, stride_y, stride_x, 1], dilations=[1, dilation, dilation, 1], padding='VALID', data_format='NHWC')
-                    return tf.nn.bias_add(conv, b,  data_format='NHWC')
-
-                def convolve_lambda(i, k):
-                    import tensorflow as tf
-                    return tf.nn.conv2d(i, k, strides=[1, stride_y, stride_x, 1], dilations=[1, dilation, dilation, 1], padding='VALID', data_format='NHWC')
-
-                input_groups = tf.split(axis=3, num_or_size_splits=groups, value=x)
-                weight_groups = tf.split(axis=3, num_or_size_splits=groups, value=W)
-                if has_bias:
-                    bias_groups = tf.split(axis=0, num_or_size_splits=groups, value=bias)
-                    output_groups = [convolve_lambda_biased(i, k, b) for i, k, b in
-                                     zip(input_groups, weight_groups, bias_groups)]
-                else:
-                    output_groups = [convolve_lambda(i, k) for i, k in zip(input_groups, weight_groups)]
-
-                layer = tf.concat(axis=3, values=output_groups)
-                if data_format == 'NCHW':
-                    layer = tf.transpose(layer, [0, 3, 1, 2])
-
-                return layer
-
-            lambda_layer = keras.layers.Lambda(target_layer)
-            layers[node_name] = lambda_layer(input_0)
 
         else:
             if has_bias:
                 weights = [W, bias]
             else:
                 weights = [W]
-
+                
             conv = keras.layers.Conv2D(
                 filters=out_channels,
                 kernel_size=(height, width),
@@ -171,10 +161,12 @@ def convert_conv(node, params, layers, lambda_func, node_name, keras_name):
                 activation=None,
                 dilation_rate=dilation,
                 bias_initializer='zeros', kernel_initializer='zeros',
+                data_format="channels_last",
                 name=keras_name
             )
 
             layers[node_name] = conv(input_0)
+
     else:
         # 1D conv
         W = W.transpose(2, 1, 0)
@@ -188,11 +180,13 @@ def convert_conv(node, params, layers, lambda_func, node_name, keras_name):
 
         def target_layer(x, w=weights, stride=strides[0]):
             import tensorflow as tf
+            
             w = tf.convert_to_tensor(w[0])
             x = tf.transpose(x, [0, 2, 1])
             x = tf.nn.conv1d(x, w, stride=stride, padding='SAME', data_format='NWC')
             return tf.transpose(x, [0, 2, 1])
 
+        
         lambda_layer = keras.layers.Lambda(target_layer, name=keras_name)
         lambda_layer[keras_name] = target_layer
         layers[node_name] = lambda_layer(input_0)
@@ -233,7 +227,7 @@ def convert_convtranspose(node, params, layers,
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.convtranpose')
+    logger = logging.getLogger('onnx2keras:convtranpose')
 
     if len(node.input) == 3:
         logger.debug('ConvTranspose with bias')

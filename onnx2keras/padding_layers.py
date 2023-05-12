@@ -1,6 +1,8 @@
 from tensorflow import keras
+import tensorflow as tf
 import logging
 from .utils import ensure_tf_type
+from .gridsample import GridSample
 
 
 def convert_padding(node, params, layers, lambda_func, node_name, keras_name):
@@ -15,7 +17,7 @@ def convert_padding(node, params, layers, lambda_func, node_name, keras_name):
     :return: None
     """
     # It's binary by-default
-    logger = logging.getLogger("onnx2keras.padding")
+    logger = logging.getLogger("onnx2keras:padding")
     params['mode'] = params['mode'].decode('ascii')
     input_0 = ensure_tf_type(layers[node.input[0]], name="%s_const" % keras_name)
 
@@ -75,3 +77,27 @@ def convert_padding(node, params, layers, lambda_func, node_name, keras_name):
 
     else:
         raise AttributeError('Unknown padding')
+
+
+
+def convert_gridsample(node, params, layers, lambda_func, node_name, keras_name):
+    """
+    Convert Constant layer
+    :param node: current operation node
+    :param params: operation attributes
+    :param layers: available keras layers
+    :param lambda_func: function for keras Lambda layer
+    :param node_name: internal converter name
+    :param keras_name: resulting layer name
+    :return: None
+    """
+# from params add attributes to the layer 
+# take the two inputs and pass it on.
+# if you pass on two inputs it would work properly.
+    input_0 = ensure_tf_type(layers[node.input[0]], name="%s_const" % keras_name)
+    input_1 = ensure_tf_type(layers[node.input[1]], name="%s_const" % keras_name)
+    perm1 = tf.keras.layers.Permute(((3, 2, 1)))(input_0)
+
+    layer = GridSample()
+    layers[node_name] = layer([perm1,input_1])
+

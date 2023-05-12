@@ -1,6 +1,4 @@
 from tensorflow import keras
-import tensorflow as tf
-import tensorflow_addons as tfa
 import logging
 from .utils import ensure_tf_type, ensure_numpy_type
 
@@ -16,7 +14,7 @@ def convert_batchnorm(node, params, layers, lambda_func, node_name, keras_name):
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.batchnorm2d')
+    logger = logging.getLogger('onnx2keras:batchnorm2d')
 
     input_0 = ensure_tf_type(layers[node.input[0]], name="%s_const" % keras_name)
 
@@ -67,7 +65,7 @@ def convert_instancenorm(node, params, layers, lambda_func, node_name, keras_nam
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.instancenorm2d')
+    logger = logging.getLogger('onnx2keras:instancenorm2d')
 
     input_0 = ensure_tf_type(layers[node.input[0]], name="%s_const" % keras_name)
 
@@ -75,18 +73,24 @@ def convert_instancenorm(node, params, layers, lambda_func, node_name, keras_nam
         gamma = ensure_numpy_type(layers[node.input[1]])
         beta = ensure_numpy_type(layers[node.input[2]])
     else:
-        raise AttributeError('Unknown arguments for instance norm')
+        raise AttributeError('Unknown arguments for batch norm')
 
-    epsilon = params['epsilon']
+    def target_layer(x, epsilon=params['epsilon'], gamma=gamma, beta=beta):
+        import tensorflow as tf
+        from keras import backend as K
+        data_format = 'NCHW' if K.image_data_format() == 'channels_first' else 'NHWC'
 
-    instance_norm = tfa.layers.InstanceNormalization(
-        axis=1,
-        epsilon=epsilon,
-        beta_initializer=tf.constant_initializer(beta),
-        gamma_initializer=tf.constant_initializer(gamma),
-        trainable=False
+        layer = tf.contrib.layers.instance_norm(
+            x,
+            param_initializers={'beta': tf.constant_initializer(beta), 'gamma': tf.constant_initializer(gamma)},
+            epsilon=epsilon, data_format=data_format,
+            trainable=False
         )
-    layers[node_name] = instance_norm(input_0)
+        return layer
+
+    lambda_layer = keras.layers.Lambda(target_layer, name=keras_name)
+    layers[node_name] = lambda_layer(input_0)
+    lambda_func[keras_name] = target_layer
 
 
 def convert_dropout(node, params, layers, lambda_func, node_name, keras_name):
@@ -100,7 +104,7 @@ def convert_dropout(node, params, layers, lambda_func, node_name, keras_name):
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.dropout')
+    logger = logging.getLogger('onnx2keras:dropout')
 
     # In ONNX Dropout returns dropout mask as well.
     if isinstance(keras_name, list) and len(keras_name) > 1:
@@ -124,7 +128,7 @@ def convert_lrn(node, params, layers, lambda_func, node_name, keras_name):
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.LRN')
+    logger = logging.getLogger('onnx2keras:LRN')
     logger.debug('LRN can\'t be tested with PyTorch exporter, so the support is experimental.')
 
     input_0 = ensure_tf_type(layers[node.input[0]], name="%s_const" % keras_name)

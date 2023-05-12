@@ -5,10 +5,11 @@ The ONNX to keras converter module
 from tensorflow import keras
 import logging
 import inspect
-import collections
 from onnx import numpy_helper
-
 from .layers import AVAILABLE_CONVERTERS
+import onnx
+import pdb
+
 
 
 def onnx_node_attributes_to_dict(args):
@@ -48,9 +49,10 @@ def onnx_to_keras(onnx_model, input_names,
     :param change_ordering: change ordering to HWC (experimental)
     :return: Keras model
     """
+    
     # Use channels first format by default.
     keras_fmt = keras.backend.image_data_format()
-    keras.backend.set_image_data_format('channels_first')
+    keras.backend.set_image_data_format('channels_last')
 
     if verbose:
         logging.basicConfig(level=logging.DEBUG)
@@ -68,6 +70,7 @@ def onnx_to_keras(onnx_model, input_names,
     logger.debug(input_shapes)
 
     logger.debug('List inputs:')
+
     for i, input in enumerate(onnx_inputs):
         logger.debug('Input {0} -> {1}.'.format(i, input.name))
 
@@ -103,7 +106,10 @@ def onnx_to_keras(onnx_model, input_names,
                 if input_shapes:
                     input_shape = input_shapes[i]
                 else:
-                    input_shape = [i.dim_value for i in onnx_i.type.tensor_type.shape.dim][1:]
+                    onnx_input_shape = [i.dim_value for i in onnx_i.type.tensor_type.shape.dim]
+                    if len(onnx_input_shape) == 4 :
+                        N, C, H, W = onnx_input_shape
+                        input_shape = [H, W, C]
 
                 layers[input_name] = keras.layers.InputLayer(
                     input_shape=input_shape, name=input_name
@@ -116,16 +122,18 @@ def onnx_to_keras(onnx_model, input_names,
     # Convert every operation separable
     node_names = []
     for node_index, node in enumerate(onnx_nodes):
+       
         node_type = node.op_type
         node_params = onnx_node_attributes_to_dict(node.attribute)
 
         # Add global converter info:
-        node_params['change_ordering'] = change_ordering
         node_params['name_policy'] = name_policy
 
         node_name = str(node.output[0])
+        
         keras_names = []
         for output_index, output in enumerate(node.output):
+            
             if name_policy == 'short':
                 keras_name = keras_name_i = str(output)[:8]
                 suffix = 1
@@ -163,16 +171,20 @@ def onnx_to_keras(onnx_model, input_names,
             logger.debug('Check input %i (name %s).', i, node_input)
             if node_input not in layers:
                 logger.debug('The input not found in layers / model inputs.')
-
                 if node_input in weights:
                     logger.debug('Found in weights, add as a numpy constant.')
                     layers[node_input] = weights[node_input]
+                # added the condition to remove blank inputs 
+                elif node_input == "":
+                    while node_input in node.input:
+                        node.input.remove(node_input)
+                
                 else:
                     raise AttributeError('Current node is not in weights / model inputs / layers.')
         else:
             logger.debug('... found all, continue')
-
-        keras.backend.set_image_data_format('channels_first')
+        keras.backend.set_image_data_format('channels_last')
+        
         AVAILABLE_CONVERTERS[node_type](
             node,
             node_params,
@@ -190,101 +202,14 @@ def onnx_to_keras(onnx_model, input_names,
             pass
 
     # Check for terminal nodes
+    
     for layer in onnx_outputs:
         if layer in layers:
             keras_outputs.append(layers[layer])
 
+
     # Create model
     model = keras.models.Model(inputs=keras_inputs, outputs=keras_outputs)
-
-    if change_ordering:
-        change_ord_axes_map = {
-            3: 2,
-            1: 3,
-            -1: 1
-        }
-
-        import numpy as np
-        conf = model.get_config()
-
-        for layer in conf['layers']:
-            if layer['config'] and 'shared_axes' in layer['config']:
-                # TODO: check axes first (if it's not 4D tensor)
-                layer['config']['shared_axes'] = [1, 2]
-
-            if layer['config'] and 'batch_input_shape' in layer['config']:
-                layer['config']['batch_input_shape'] = \
-                    tuple(np.reshape(np.array(
-                        [
-                            [None] +
-                            list(layer['config']['batch_input_shape'][2:][:]) +
-                            [layer['config']['batch_input_shape'][1]]
-                        ]), -1
-                    ))
-            if layer['config'] and 'target_shape' in layer['config']:
-                if len(list(layer['config']['target_shape'][1:][:])) > 0:
-                    layer['config']['target_shape'] = \
-                        tuple(np.reshape(np.array(
-                                list(layer['config']['target_shape'][1:]) +
-                                [layer['config']['target_shape'][0]]
-                            ), -1),)
-
-            if layer['config'] and 'data_format' in layer['config']:
-                layer['config']['data_format'] = 'channels_last'
-            if layer['config'] and 'axis' in layer['config']:
-                axis = layer['config']['axis']
-                # BatchNorm wrap axis with ListWrapper instead single INT value
-                if isinstance(axis, (tuple, list)):
-                    axis = axis[0]
-                layer['config']['axis'] = change_ord_axes_map.get(axis, layer['config']['axis'])
-
-        for layer in conf['layers']:
-            if 'function' in layer['config'] and layer['config']['function'][1] is not None:
-                kerasf = list(layer['config']['function'])
-                dargs = list(kerasf[1])
-                func = lambda_funcs.get(layer['name'])
-
-                if func:
-                    # ReduceSum operation has 'axis' param as array of ints. When onnx uses ReduceSum
-                    # to reproduce SoftMax - dargs become something like [[1]] (list of lists)
-                    # that why we handle collections.Iterable
-                    if len(dargs) > 1 or isinstance(dargs[0], (tuple, list)):
-                        params = inspect.signature(func).parameters
-                        i = list(params.keys()).index('axes') if ('axes' in params) else -1
-
-                        if i > 0:
-                            i -= 1
-                            axes = list(range(len(dargs[i].shape)))
-                            axes = axes[0:1] + axes[2:] + axes[1:2]
-                            dargs[i] = np.transpose(dargs[i], axes)
-
-                        i = list(params.keys()).index('axis') if ('axis' in params) else -1
-
-                        if i > 0:
-                            i -= 1
-                            axis = np.array(dargs[i])
-                            axes_map = np.array([0, 3, 1, 2])
-                            # to list because some tf operations check only for core python types (e.g tf.norm)
-                            dargs[i] = axes_map[axis].tolist()
-                    else:
-                        # if map exits will change else will remain the same
-                        dargs[0] = change_ord_axes_map.get(dargs[0], dargs[0])
-
-                kerasf[1] = tuple(dargs)
-                layer['config']['function'] = tuple(kerasf)
-
-        keras.backend.set_image_data_format('channels_last')
-        model_tf_ordering = keras.models.Model.from_config(conf)
-
-        for dst_layer, src_layer, conf in zip(model_tf_ordering.layers, model.layers, conf['layers']):
-            W = src_layer.get_weights()
-            # TODO: check axes first (if it's not 4D tensor)
-            if conf['config'] and 'shared_axes' in conf['config']:
-                W[0] = W[0].transpose(1, 2, 0)
-            dst_layer.set_weights(W)
-
-        model = model_tf_ordering
-
-    keras.backend.set_image_data_format(keras_fmt)
-
+    
+    # maybe instead of returning the model, saving it as SavedModel instead.
     return model

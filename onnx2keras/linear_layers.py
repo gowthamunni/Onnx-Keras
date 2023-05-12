@@ -13,7 +13,7 @@ def convert_gemm(node, params, layers, lambda_func, node_name, keras_name):
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.gemm')
+    logger = logging.getLogger('onnx2keras:gemm')
 
     # Check if Bias available
     if len(node.input) == 3:
@@ -35,7 +35,8 @@ def convert_gemm(node, params, layers, lambda_func, node_name, keras_name):
     # Estimate input/output neurons
     input_channels, output_channels = keras_weights[0].shape
     logger.debug('Input units %s, output units %s.', input_channels, output_channels)
-
+    
+    
     if is_numpy(keras_weights[0]):
         dense = keras.layers.Dense(
             output_channels,
@@ -46,9 +47,18 @@ def convert_gemm(node, params, layers, lambda_func, node_name, keras_name):
         try:
             layers[node_name] = dense(layers[node.input[0]])
         except ValueError:
-            reshape = keras.layers.Reshape([input_channels], name=keras_name + '_reshape')
-            reshaped_x = reshape(layers[node.input[0]])
-            layers[node_name] = dense(reshaped_x)
+            try:
+                keras_weights[0] = keras_weights[0].transpose()
+                dense = keras.layers.Dense(
+                            output_channels,
+                            weights=keras_weights, name=keras_name, bias_initializer='zeros', kernel_initializer='zeros', use_bias=has_bias
+                            )
+                layers[node_name] = dense(layers[node.input[0]])
+
+            except:
+                reshape = keras.layers.Reshape([input_channels], name=keras_name + '_reshape')
+                reshaped_x = reshape(layers[node.input[0]])
+                layers[node_name] = dense(reshaped_x)
     
     else:
         layers[node_name] = keras.layers.Multiply()([layers[node.input[0]], layers[node.input[1]]])

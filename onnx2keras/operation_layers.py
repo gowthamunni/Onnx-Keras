@@ -3,7 +3,7 @@ from tensorflow.keras import backend as K
 import logging
 from .utils import is_numpy, ensure_tf_type, ensure_numpy_type
 import numpy as np
-
+import tensorflow as tf
 # Handle python 2.7 import error
 try:
     from collections.abc import Iterable
@@ -22,7 +22,7 @@ def convert_clip(node, params, layers, lambda_func, node_name, keras_name):
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.clip')
+    logger = logging.getLogger('onnx2keras:clip')
     if len(node.input) != 1:
         assert AttributeError('More than 1 input for clip layer.')
 
@@ -131,17 +131,24 @@ def convert_reduce_mean(node, params, layers, lambda_func, node_name, keras_name
     """
     if len(node.input) != 1:
         assert AttributeError('More than 1 input for reduce mean layer.')
-
+    
     input_0 = ensure_tf_type(layers[node.input[0]], name="%s_const" % keras_name)
 
-    def target_layer(x, axis=params['axes'], keepdims=params['keepdims']):
-        import tensorflow.keras.backend as K
-        return K.mean(x, keepdims=(keepdims == 1), axis=axis)
+    if params["axes"] == [2, 3]:
+        axes = [1,2]
+    else:
+        axes = params["axes"]
 
-    lambda_layer = keras.layers.Lambda(target_layer, name=keras_name)
-    layers[node_name] = lambda_layer(input_0)
-    layers[node_name].set_shape(layers[node_name].shape)
-    lambda_func[keras_name] = target_layer
+    # changed - added an if condition
+    if "keepdims" in params:
+        reduce_mean = tf.math.reduce_mean(input_0, keepdims=(params["keepdims"] == 1), axis=axes)    
+        layers[node_name] = reduce_mean
+
+    else:
+         # but is this the same in channels_last and channels_first.
+        reduce_mean = tf.math.reduce_mean(input_0, keepdims=True, axis=axes)    
+        layers[node_name] = reduce_mean
+
 
 
 def convert_reduce_max(node, params, layers, lambda_func, node_name, keras_name):
@@ -187,13 +194,9 @@ def convert_pow(node, params, layers, lambda_func, node_name, keras_name):
     input_0 = ensure_tf_type(layers[node.input[0]], name="%s_const" % keras_name)
     power = ensure_numpy_type(layers[node.input[1]])
 
-    def target_layer(x, a=power):
-        import tensorflow.keras.backend as K
-        return K.pow(x, a)
-
-    lambda_layer = keras.layers.Lambda(target_layer, name=keras_name)
-    layers[node_name] = lambda_layer(input_0)
-    lambda_func[keras_name] = target_layer
+    pow = tf.math.pow(input_0, power)
+    layers[node_name] = pow
+    
 
 
 def convert_sqrt(node, params, layers, lambda_func, node_name, keras_name):
@@ -211,14 +214,8 @@ def convert_sqrt(node, params, layers, lambda_func, node_name, keras_name):
         assert AttributeError('More than 1 input for sqrt layer.')
 
     input_0 = ensure_tf_type(layers[node.input[0]], name="%s_const" % keras_name)
-
-    def target_layer(x):
-        import tensorflow.keras.backend as K
-        return K.sqrt(x)
-
-    lambda_layer = keras.layers.Lambda(target_layer, name=keras_name)
-    layers[node_name] = lambda_layer(input_0)
-    lambda_func[keras_name] = target_layer
+    sqrt = tf.math.sqrt(input_0)
+    layers[node_name] = sqrt
 
 
 def convert_split(node, params, layers, lambda_func, node_name, keras_names):
@@ -269,7 +266,7 @@ def convert_cast(node, params, layers, lambda_func, node_name, keras_name):
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.cast')
+    logger = logging.getLogger('onnx2keras:cast')
 
     if len(node.input) != 1:
         assert AttributeError('More than 1 input for cast layer.')
@@ -398,11 +395,10 @@ def convert_reduce_l2(node, params, layers, lambda_func, node_name, keras_name):
 
     input_0 = ensure_tf_type(layers[node.input[0]], name="%s_const" % keras_name)
     axis = params.get("axes", [-1])
-    keepdims = params.get("keepdims", 0)
 
-    def target_layer(x, axis=axis, keepdims=keepdims):
+    def target_layer(x, axis=axis):
         import tensorflow as tf
-        return tf.norm(x, axis=axis, keepdims=keepdims == 1)
+        return tf.norm(x, axis=axis)
 
     lambda_layer = keras.layers.Lambda(target_layer, name=keras_name)
     layers[node_name] = lambda_layer(input_0)

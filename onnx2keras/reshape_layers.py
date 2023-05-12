@@ -15,19 +15,21 @@ def convert_transpose(node, params, layers, lambda_func, node_name, keras_name):
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.transpose')
+    logger = logging.getLogger('onnx2keras:transpose')
     input_name = node.input[0]
 
-    if params['perm'][0] != 0:
-        logger.warning('Can\'t permute batch dimension. Result may be wrong.')
-        if is_numpy(layers[input_name]):
-            logger.warning('Transposing numpy array.')
-            layers[node_name] = np.transpose(layers[input_name], axes=params['perm'])
-        else:
-            raise NotImplementedError('Can\'t modify this type of data')
-    else:
-        permute = keras.layers.Permute(params['perm'][1:], name=keras_name)
-        layers[node_name] = permute(layers[input_name])
+    # if params['perm'][0] != 0:
+    #     logger.warning('Can\'t permute batch dimension. Result may be wrong.')
+    #     if is_numpy(layers[input_name]):
+    #         logger.warning('Transposing numpy array.')
+    #         layers[node_name] = np.transpose(layers[input_name], axes=params['perm'])
+    #     else:
+    #         raise NotImplementedError('Can\'t modify this type of data')
+    # else:
+    #     permute = keras.layers.Permute(params['perm'][1:], name=keras_name)
+    layers[node_name] = layers[input_name] # leaving it as it is.
+
+    
 
 
 def convert_shape(node, params, layers, lambda_func, node_name, keras_name):
@@ -41,7 +43,7 @@ def convert_shape(node, params, layers, lambda_func, node_name, keras_name):
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.shape')
+    logger = logging.getLogger('onnx2keras:shape')
     input_0 = ensure_tf_type(layers[node.input[0]], layers[list(layers)[0]], name="%s_const" % keras_name)
 
     logger.debug('Actual shape:')
@@ -68,8 +70,8 @@ def convert_gather(node, params, layers, lambda_func, node_name, keras_name):
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.gather')
-
+    logger = logging.getLogger('onnx2keras:gather')
+   
     if is_numpy(layers[node.input[0]]) and is_numpy(layers[node.input[1]]):
         logger.debug('Gather from numpy array')
 
@@ -98,19 +100,31 @@ def convert_concat(node, params, layers, lambda_func, node_name, keras_name):
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.concat')
+    logger = logging.getLogger('onnx2keras:concat')
+    if params["axis"] == 1:
+        axis = 3
+    else:
+        axis = params["axis"]
+
 
     layer_input = [layers[node.input[i]] for i in range(len(node.input))]
 
     if all([is_numpy(layers[node.input[i]]) for i in range(len(node.input))]):
         logger.debug('Concat numpy arrays.')
-        layers[node_name] = np.concatenate(layer_input, axis=params['axis'])
+        # add the variation for Resize
+        if params['axis'] == 0 and "Resize" in str(node.output):
+            if params["change_ordering"]:
+                N, C, H, W = np.concatenate(layer_input, axis=axis)
+                layers[node_name] = np.array([N, H, W, C])
+        # up to here.        
+        else: 
+            layers[node_name] = np.concatenate(layer_input, axis=axis)
     else:
         logger.debug('Concat Keras layers.')
         if len(layer_input) > 1:
             try:
                 layers[node_name] = keras.layers.concatenate(inputs=layer_input,
-                                                             axis=params['axis'],
+                                                             axis=axis,
                                                              name=keras_name)
             except:
                 logger.warning('!!! IMPORTANT INFORMATION !!!')
@@ -140,7 +154,7 @@ def convert_reshape(node, params, layers, lambda_func, node_name, keras_name):
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.reshape')
+    logger = logging.getLogger('onnx2keras:reshape')
 
     input_0 = layers[node.input[0]]
     input_1 = layers[node.input[1]]
@@ -204,7 +218,7 @@ def convert_unsqueeze(node, params, layers, lambda_func, node_name, keras_name):
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.unsqueeze')
+    logger = logging.getLogger('onnx2keras:unsqueeze')
 
     if len(node.input) != 1:
         raise AttributeError('Number of inputs is not equal 1 for unsqueeze layer')
@@ -242,7 +256,7 @@ def convert_flatten(node, params, layers, lambda_func, node_name, keras_name):
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.flatten')
+    logger = logging.getLogger('onnx2keras:flatten')
 
     if len(node.input) != 1:
         raise AttributeError('Number of inputs is not equal 1 for flatten layer')
@@ -250,21 +264,14 @@ def convert_flatten(node, params, layers, lambda_func, node_name, keras_name):
     logger.debug('Convert inputs to Keras/TF layers if needed.')
     input_0 = ensure_tf_type(layers[node.input[0]], layers[list(layers)[0]], name="%s_const" % keras_name)
 
-    if params['change_ordering']:
-        # Fix critical issue with flatten
-        def target_layer(x):
-            import tensorflow as tf
-            x = tf.transpose(x, [0, 3, 1, 2])
-            return x
-
-        lambda_layer = keras.layers.Lambda(target_layer, name="%s_CHW" % keras_name)
-        tensor_chw = lambda_layer(input_0)
-        flatten = keras.layers.Flatten(name=keras_name)
-        layers[node_name] = flatten(tensor_chw)
-        lambda_func["%s_CHW" % keras_name] = target_layer
-    else:
-        reshape = keras.layers.Reshape([-1], name=keras_name)
-        layers[node_name] = reshape(input_0)
+    perm_layer = keras.layers.Permute((3,1,2), name="%s_CHW" % keras_name)
+    tensor_chw = perm_layer(input_0)
+    flatten = keras.layers.Flatten(name=keras_name)
+    layers[node_name] = flatten(tensor_chw)
+        # lambda_func["%s_CHW" % keras_name] = target_layer
+    # else:
+    #     reshape = keras.layers.Reshape([-1], name=keras_name)
+    #     layers[node_name] = reshape(input_0)
 
 
 def convert_slice(node, params, layers, lambda_func, node_name, keras_name):
@@ -278,11 +285,26 @@ def convert_slice(node, params, layers, lambda_func, node_name, keras_name):
     :param keras_name: resulting layer name
     :return: None
     """
-    logger = logging.getLogger('onnx2keras.slice')
+    logger = logging.getLogger('onnx2keras:slice')
 
     if is_numpy(layers[node.input[0]]):
+        # added from here
         if params['change_ordering']:
-            raise NotImplementedError("change_ordering for Slice is not implemented")
+            if len(node.input) > 1:
+                if node.input[1] in layers:
+                    starts = layers[node.input[1]][0]
+                    ends = layers[node.input[2]][0]
+                    axes = layers[node.input[3]][0]
+
+            if axes == 0 :
+                input_0 = layers[node.input[0]]
+                shape_array = np.array([input_0[starts], input_0[ends + 1 ]])
+                layers[node_name] = shape_array
+ 
+            else:
+                raise NotImplementedError("Slice is not implemented for axis greater than 0.") 
+            
+        # to here
         logger.debug('Slice numpy constants')
         if 'axes' in params:
             if len(params["axes"]) != 1:
@@ -290,6 +312,14 @@ def convert_slice(node, params, layers, lambda_func, node_name, keras_name):
             axes = params["axes"][0]
             ends = params["ends"][0]
             starts = params["starts"][0]
+        # added this condition.    
+        logger.debug("Attributes not found in params, checking layers.")
+        if len(node.input) > 1:
+            if node.input[1] in layers:
+                starts = layers[node.input[1]][0]
+                ends = layers[node.input[2]][0]
+                axes = layers[node.input[3]][0]
+
         else:
             raise AttributeError('Not implemented')
 
@@ -421,3 +451,42 @@ def convert_expand(node, params, layers, lambda_func, node_name, keras_name):
     lambda_layer = keras.layers.Lambda(target_layer, name=keras_name)
     layers[node_name] = lambda_layer(input_0)
     lambda_func[keras_name] = target_layer
+
+def convert_resize(node, params, layers, lambda_func, node_name, keras_name):
+    """
+    Convert upsample.
+    :param node: current operation node
+    :param params: operation attributes
+    :param layers: available keras layers
+    :param lambda_func: function for keras Lambda layer
+    :param node_name: internal converter name
+    :param keras_name: resulting layer name
+    :return: None
+    """
+    logger = logging.getLogger('onnx2keras:resize')
+    # logger.warning('!!! EXPERIMENTAL SUPPORT (upsample) !!!')
+
+
+    # added from here.
+
+    if len(node.input) > 2:
+        assert AttributeError('More than 3 input for resizing layer.')
+        
+    N , H, W, C = layers[node.input[1]]
+
+    input_0 = layers[node.input[0]]
+    permute_before = keras.layers.Permute((2, 3, 1))(input_0)
+
+    if params['mode'].decode('utf-8') == 'linear':
+        upsampling = keras.layers.Resizing(H ,W , interpolation="bilinear",name=keras_name)
+        up_result = upsampling(permute_before)
+
+    elif params['mode'].decode('utf-8') == 'nearest':
+        upsampling = keras.layers.Resizing(H, W, interpolation='nearest',name=keras_name)
+        up_result = upsampling(permute_before)
+    else:
+        logger.error('Cannot convert non-nearest and non linear Resize.')
+        raise AssertionError('Cannot convert non-nearest and non linear Resize.')
+
+    permute_after = keras.layers.Permute((3,2,1))
+    layers[node_name] = permute_after(up_result)
