@@ -132,7 +132,9 @@ tf.io.write_graph(graph_or_graph_def=frozen_func.graph,
                   name="frozen_graph.pb",
                   as_text=False)
 ```
-
+## Info
+- Working Branch of Onnx-Keras.
+- Performs well with almost all known classification models.
 
 ## License
 This software is covered by MIT License.
